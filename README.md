@@ -1,5 +1,11 @@
 # Universal MCP 🧩
 
+[![CI](https://github.com/rtostudioco/universal-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rtostudioco/universal-mcp/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2EA043)](LICENSE)
+[![Protocol: MCP](https://img.shields.io/badge/protocol-MCP-F97316)](https://modelcontextprotocol.io)
+[![Release](https://img.shields.io/github/v/release/rtostudioco/universal-mcp?color=8B5CF6)](https://github.com/rtostudioco/universal-mcp/releases)
+
 **Ecosistema modular de herramientas de IA, datos, automatización y análisis sobre el [Model Context Protocol](https://modelcontextprotocol.io).**
 
 Universal MCP es un servidor MCP en Python cuyo núcleo (*MCP Core*) es **plenamente modular**: los módulos se **descubren e instalan automáticamente**, así que puedes añadir herramientas nuevas sin reescribir el servidor. Soporta **ambos transportes** — `stdio` (para Claude Desktop / CLI) y `streamable-http` / `sse` (para acceso remoto).
