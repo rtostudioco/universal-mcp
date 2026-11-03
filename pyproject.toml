@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "universal-mcp"
+version = "0.1.0"
+description = "Universal MCP: ecosistema modular de herramientas de IA, datos, automatización y análisis sobre el Model Context Protocol."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Universal MCP Contributors" }]
+keywords = ["mcp", "model-context-protocol", "tools", "llm", "automation"]
+dependencies = [
+    "mcp>=1.9.0,<2.0",
+    "httpx>=0.27",
+    "pydantic-settings>=2.2",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+universal-mcp = "universal_mcp.__main__:main"
+
+[tool.hatchling.build.targets.wheel]
+packages = ["src/universal_mcp"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
