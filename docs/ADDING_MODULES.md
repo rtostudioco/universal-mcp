@@ -89,8 +89,19 @@ class BaseModule(ABC):
     def register(self, ctx: ModuleContext) -> None: ...
 
     def setup(self) -> None: ...     # opcional: tras instanciar, antes de register
-    def teardown(self) -> None: ...  # opcional: al apagar el servidor
+    def teardown(self) -> None: ...  # opcional: al apagar el servidor (shutdown() lo
+                                     # invoca en orden inverso, tolerante a fallos)
 ```
+
+> **Ciclo de vida (v0.2):** implementa `teardown()` para liberar recursos
+> (conexiones, archivos temporales); `UniversalMCPServer.shutdown()` lo
+> llama automáticamente al apagar (SIGINT/SIGTERM/atexit), en orden inverso
+> al de carga y sin propagar excepciones.
+
+> **Permisos (v0.2):** el operador puede bloquear tools con globs vía
+> `MCP_BLOCKED_TOOLS` / `MCP_ALLOWED_TOOLS`. Si tu tool está bloqueada no
+> se registra (aparece en `RegistrationReport.blocked_tools`); diseñala
+> para que su ausencia no rompa el resto del módulo.
 
 ### API de `ModuleContext`
 

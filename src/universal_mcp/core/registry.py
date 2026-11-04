@@ -26,7 +26,7 @@ from typing import Any
 
 from universal_mcp.core.base import BaseModule
 from universal_mcp.core.config import Settings
-from universal_mcp.core.context import ModuleContext
+from universal_mcp.core.context import BlockedTool, ModuleContext
 
 logger = logging.getLogger("mcp.registry")
 
@@ -48,6 +48,67 @@ class SkippedModule:
 class RegistrationReport:
     loaded: list[LoadedModule] = field(default_factory=list)
     skipped: list[SkippedModule] = field(default_factory=list)
+    blocked_tools: list[BlockedTool] = field(default_factory=list)
+
+
+# ----------------------------------------------------------------------
+# Rollback de registro parcial
+# ----------------------------------------------------------------------
+def _registered_names(server: Any) -> dict[str, set[str]]:
+    """Nombres vivos de tools/prompts/resources/templates en FastMCP."""
+    tool_manager = getattr(server, "_tool_manager", None)
+    prompt_manager = getattr(server, "_prompt_manager", None)
+    resource_manager = getattr(server, "_resource_manager", None)
+    return {
+        "tools": set(getattr(tool_manager, "_tools", {}) or {}),
+        "prompts": set(getattr(prompt_manager, "_prompts", {}) or {}),
+        "resources": set(getattr(resource_manager, "_resources", {}) or {}),
+        "templates": set(getattr(resource_manager, "_templates", {}) or {}),
+    }
+
+
+def _rollback_partial(
+    server: Any, before: dict[str, set[str]], taken_names: set[str], taken_before: set[str]
+) -> list[str]:
+    """Elimina lo que un módulo dejó registrado a medias y libera sus nombres.
+
+    Devuelve la lista de nombres eliminados. Es *best-effort*: si el SDK
+    cambia de estructura interna se degrada a un borrado directo del dict.
+    """
+    removed: list[str] = []
+    now = _registered_names(server)
+
+    tool_manager = getattr(server, "_tool_manager", None)
+    remover = getattr(server, "remove_tool", None) or getattr(tool_manager, "remove_tool", None)
+    for tool_name in sorted(now["tools"] - before["tools"]):
+        try:
+            if remover is None:
+                raise RuntimeError("FastMCP sin remove_tool")
+            remover(tool_name)
+        except Exception:  # best-effort: el dict interno manda
+            if tool_manager is not None:
+                getattr(tool_manager, "_tools", {}).pop(tool_name, None)
+        removed.append(tool_name)
+
+    prompt_manager = getattr(server, "_prompt_manager", None)
+    if prompt_manager is not None:
+        for prompt_name in sorted(now["prompts"] - before["prompts"]):
+            getattr(prompt_manager, "_prompts", {}).pop(prompt_name, None)
+            removed.append(prompt_name)
+
+    resource_manager = getattr(server, "_resource_manager", None)
+    if resource_manager is not None:
+        for resource_uri in sorted(now["resources"] - before["resources"]):
+            getattr(resource_manager, "_resources", {}).pop(resource_uri, None)
+            removed.append(resource_uri)
+        for template_uri in sorted(now["templates"] - before["templates"]):
+            getattr(resource_manager, "_templates", {}).pop(template_uri, None)
+            removed.append(template_uri)
+
+    # Los nombres tomados por el módulo fallido vuelven a quedar libres.
+    taken_names.clear()
+    taken_names.update(taken_before)
+    return removed
 
 
 class ModuleRegistry:
@@ -146,6 +207,9 @@ class ModuleRegistry:
         - Respeta ``MCP_DISABLED_MODULES``.
         - Rechaza nombres de módulo duplicados (gana el primero).
         - Aísla fallos: un módulo roto no afecta a los demás.
+        - **Sin registro parcial**: si un módulo falla tras registrar
+          algunas tools, éstas se revierten (rollback) y los nombres se
+          liberan.
         """
         report = RegistrationReport(skipped=list(self._discovery_skipped))
         seen: set[str] = set()
@@ -160,20 +224,45 @@ class ModuleRegistry:
                 report.skipped.append(SkippedModule(name, source, "duplicate module name"))
                 continue
 
+            before = _registered_names(server)
+            taken_before = set(taken_names)
+            blocked_sink: list[BlockedTool] = []
             instance: BaseModule | None = None
+            ctx: ModuleContext | None = None
             try:
                 instance = cls(self.settings)
                 instance.setup()
-                ctx = ModuleContext(server, instance, self.settings, taken_names)
+                ctx = ModuleContext(
+                    server,
+                    instance,
+                    self.settings,
+                    taken_names,
+                    source=source,
+                    blocked_sink=blocked_sink,
+                )
                 instance.register(ctx)
             except Exception as exc:
+                removed = _rollback_partial(server, before, taken_names, taken_before)
                 report.skipped.append(
-                    SkippedModule(name, source, f"registration failed: {exc}")
+                    SkippedModule(
+                        name,
+                        source,
+                        f"registration failed: {exc}; rolled back {len(removed)} item(s)",
+                    )
                 )
-                logger.warning("Módulo '%s' falló al registrarse: %s", name, exc)
+                logger.warning(
+                    "Módulo '%s' falló al registrarse: %s (rollback de %d item(s): %s)",
+                    name,
+                    exc,
+                    len(removed),
+                    ", ".join(removed) or "—",
+                )
+                report.blocked_tools.extend(blocked_sink)
                 continue
 
             seen.add(name)
             report.loaded.append(LoadedModule(instance=instance, source=source))
+            if ctx is not None:
+                report.blocked_tools.extend(ctx.blocked_tools)
 
         return report

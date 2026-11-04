@@ -98,7 +98,9 @@ MCP_TRANSPORT=sse universal-mcp
 | `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8000` | Bind de los transportes HTTP. |
 | `MCP_LOG_LEVEL` | `INFO` | Nivel de log (siempre a **stderr**). |
 | `MCP_DISABLED_MODULES` | *(vacío)* | Módulos a omitir, p. ej. `system,ai`. |
-| `MCP_PLUGIN_DIRS` | *(vacío)* | Directorios de plugins externos. |
+| `MCP_PLUGIN_DIRS` | *(vacío)* | Directorios de plugins externos (desactivados salvo configuración explícita). |
+| `MCP_ALLOWED_TOOLS` | *(vacío = todas)* | Allowlist de tools (globs), p. ej. `data_*,system_*`. |
+| `MCP_BLOCKED_TOOLS` | *(vacío)* | Denylist de tools (globs); **siempre gana** sobre el allowlist. |
 | `MCP_WORKSPACE_DIR` | `./workspace` | Sandbox para `files_*` y `data_*`. |
 | `MCP_ENABLE_SHELL` | `false` | Habilita `system_run_command`. ⚠️ |
 | `MCP_HTTP_BLOCK_PRIVATE` | `true` | Bloquea IPs privadas/loopback (anti-SSRF). |
@@ -141,15 +143,19 @@ Guía completa: [`docs/ADDING_MODULES.md`](docs/ADDING_MODULES.md) · Ejemplo ej
 - **Sandbox de archivos**: `resolve_in_workspace()` valida cada ruta (incluye symlinks) contra `MCP_WORKSPACE_DIR`.
 - **SQLite de solo lectura**: `PRAGMA query_only` + whitelist `SELECT/WITH/PRAGMA/EXPLAIN`.
 - **Math por AST-whitelist**: sin `eval`; operaciones y funciones permitidas explícitamente.
-- **Anti-SSRF**: resolución DNS + bloqueo de IPs privadas/loopback/reservadas en `automation_*`.
+- **Anti-SSRF por hop**: resolución DNS + bloqueo de IPs privadas/loopback/reservadas en `automation_*`. Las redirecciones **no** se siguen ciegamente: cada hop (`Location` absoluta o relativa) se re-valida, evitando el bypass clásico `302 → 169.254.169.254`.
+- **Permisos por herramienta**: `MCP_BLOCKED_TOOLS` / `MCP_ALLOWED_TOOLS` (globs sobre el nombre final). Una tool bloqueada no se registra (se reporta en `RegistrationReport.blocked_tools`) y las registradas llevan guard en runtime (`SecurityViolationError`).
+- **Sin registro parcial**: si un módulo falla a mitad de registro, sus tools/resources a medias se revierten (rollback) y los nombres quedan libres; el resto de módulos no se ve afectado.
+- **Ciclo de vida**: `setup()` al cargar y `teardown()` al apagar (en orden inverso, tolerante a fallos), conectado a SIGINT/SIGTERM/atexit.
 - **Shell opt-in**: `system_run_command` responde con error salvo `MCP_ENABLE_SHELL=true`.
 - **Secretos enmascarados**: `system_env_vars` oculta valores de claves sensibles.
+- **Plugins externos desactivados por defecto**: solo se cargan con `MCP_PLUGIN_DIRS` explícito; se ejecutan in-process (sin sandbox) — úsalos solo con código de confianza.
 - **Logging a stderr**: stdout queda reservado al protocolo (crítico en stdio).
 
 ## 🧪 Pruebas
 
 ```bash
-.venv/bin/pytest -v          # suite completa (~60 aserciones)
+.venv/bin/pytest -v          # suite completa (~75 tests)
 .venv/bin/ruff check .       # lint (opcional)
 ```
 
@@ -162,6 +168,7 @@ Cobertura: núcleo (config, registry, contexto, sandbox), integración del servi
 - [ ] Aislamiento por subprocess para plugins no confiables.
 - [ ] Métricas (Prometheus) y traza de ejecución por tool.
 - [ ] Autenticación para transporte HTTP (bearer/OAuth).
+- [ ] Pinning de IP por conexión (mitigación completa de DNS rebinding).
 
 ## 📖 Documentación
 

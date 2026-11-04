@@ -43,6 +43,7 @@ class UniversalMCPServer:
         self.registry = ModuleRegistry(self.settings)
         self.report: RegistrationReport | None = None
         self._tool_names: set[str] = set()
+        self._shutdown_done = False
 
     # ------------------------------------------------------------------
     def load_modules(self) -> RegistrationReport:
@@ -62,7 +63,32 @@ class UniversalMCPServer:
                 skipped.reason,
             )
         logger.info("Tools registradas en total: %d", len(self._tool_names))
+        if self.report.blocked_tools:
+            blocked = ", ".join(t.name for t in self.report.blocked_tools)
+            logger.warning(
+                "Tools bloqueadas por la política de permisos (%d): %s",
+                len(self.report.blocked_tools),
+                blocked,
+            )
         return self.report
+
+    # ------------------------------------------------------------------
+    def shutdown(self) -> None:
+        """Apagado ordenado: invoca ``teardown()`` de cada módulo en orden
+        inverso al de carga. Idempotente y tolerante a fallos individuales
+        (un ``teardown`` roto no impide el apagado del resto)."""
+        if self._shutdown_done:
+            return
+        self._shutdown_done = True
+        loaded = list(self.report.loaded) if self.report else []
+        for loaded_module in reversed(loaded):
+            try:
+                loaded_module.instance.teardown()
+            except Exception as exc:  # el apagado nunca se interrumpe
+                logger.warning(
+                    "teardown() de '%s' falló: %s", loaded_module.instance.name, exc
+                )
+        logger.info("Shutdown completo: %d módulo(s) descargado(s)", len(loaded))
 
     # ------------------------------------------------------------------
     @property

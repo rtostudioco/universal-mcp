@@ -74,6 +74,11 @@ sequenceDiagram
 - Un módulo roto **nunca derriba el servidor**: queda en
   `report.skipped` con su razón (`import failed`, `disabled by config`,
   `duplicate module name`, `registration failed`).
+- **Sin registro parcial (v0.2)**: si `register()` falla a medias, el
+  registry hace *snapshot* del estado interno de FastMCP antes de cada
+  módulo y en fallo **revierte** las tools/prompts/resources añadidos
+  (`remove_tool` + purga de dicts internos) y libera los nombres tomados.
+  El motivo reporta `rolled back N item(s)`.
 
 ### 4.2 Namespacing de tools
 Cada tool se registra como `<modulo>_<nombre>` (el prefijo lo aplica
@@ -81,6 +86,21 @@ Cada tool se registra como `<modulo>_<nombre>` (el prefijo lo aplica
 - evita colisiones entre módulos independientes;
 - hace obvio para el cliente LLM qué categoría está usando;
 - se verifica en tiempo de registro (no en runtime).
+
+### 4.2.1 Permisos por herramienta (v0.2)
+`MCP_ALLOWED_TOOLS` (allowlist, vacío = todas) y `MCP_BLOCKED_TOOLS`
+(denylist; **siempre gana**) aceptan globs sobre el nombre final
+(`files_*`, `system_run_command`). Se aplica dos veces:
+1. **Registro** — una tool no permitida no se registra y aparece en
+   `RegistrationReport.blocked_tools` (el resto del módulo vive).
+2. **Runtime** — las tools registradas llevan un guard que lanza
+   `SecurityViolationError` si la política cambia en caliente.
+
+### 4.2.2 Ciclo de vida (v0.2)
+`setup()` corre al instanciar; `teardown()` corre en
+`UniversalMCPServer.shutdown()` en **orden inverso** al de carga,
+idempotente y tolerante a fallos individuales. El entrypoint CLI conecta
+`shutdown()` a `SIGTERM`/`SIGHUP`/`SIGINT` y a `atexit`.
 
 ### 4.3 Transportes
 Un solo núcleo, tres transportes (SDK oficial `mcp`):

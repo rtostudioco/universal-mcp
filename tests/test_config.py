@@ -18,6 +18,8 @@ def test_defaults() -> None:
     assert config.http_block_private is True
     assert config.disabled_modules == []
     assert config.plugin_dirs == []
+    assert config.allowed_tools == []
+    assert config.blocked_tools == []
     assert config.port == 8000
 
 
@@ -53,6 +55,14 @@ def test_comma_separated_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_json_env_lists(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MCP_PLUGIN_DIRS", '["/tmp/a", "/tmp/b"]')
     assert Settings().plugin_dirs == [Path("/tmp/a"), Path("/tmp/b")]
+
+
+def test_tool_policy_env_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MCP_ALLOWED_TOOLS", "data_*, system_*")
+    monkeypatch.setenv("MCP_BLOCKED_TOOLS", '["system_run_command", "files_*"]')
+    config = Settings()
+    assert config.allowed_tools == ["data_*", "system_*"]
+    assert config.blocked_tools == ["system_run_command", "files_*"]
 
 
 def test_ensure_dirs_creates_workspace(tmp_path: Path) -> None:

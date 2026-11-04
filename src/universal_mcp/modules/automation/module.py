@@ -4,6 +4,9 @@ Seguridad anti-SSRF:
 - Solo esquemas http/https.
 - Con ``MCP_HTTP_BLOCK_PRIVATE=true`` (por defecto) se resuelve el host y se
   bloquean IPs privadas, loopback, link-local, reservadas y multicast.
+- **Cada hop de redirección se re-valida**: ``follow_redirects=False`` y un
+  bucle manual comprueba el destino de cada salto (incluye Location
+  relativas), evitando el bypass clásico 302 → 169.254.169.254.
 - Timeouts acotados y cuerpos de respuesta truncados.
 """
 
@@ -13,9 +16,10 @@ import ipaddress
 import socket
 import time
 import uuid as uuid_lib
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -26,6 +30,8 @@ from universal_mcp.core.utils import clamp, to_json
 
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 _MAX_WAIT_SECONDS = 60.0
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+_MAX_REDIRECTS = 5
 
 
 # ----------------------------------------------------------------------
@@ -70,6 +76,70 @@ def assert_public_host(url: str, block_private: bool) -> None:
             )
 
 
+def _downgraded_method(method: str, status: int) -> str:
+    """Método efectivo tras una redirección (301/302/303 degradan a GET)."""
+    if status in (301, 302, 303) and method not in ("GET", "HEAD"):
+        return "GET"
+    return method
+
+
+def request_with_redirect_guard(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    content: str | None = None,
+    json_body: dict[str, Any] | None = None,
+    block_private: bool = True,
+    timeout: float = 15.0,
+    max_redirects: int = _MAX_REDIRECTS,
+    client_factory: Callable[..., httpx.Client] = httpx.Client,
+) -> httpx.Response:
+    """HTTP con guard anti-SSRF en **cada** hop de redirección.
+
+    - Valida el destino con :func:`assert_public_host` antes de cada
+      petición (URL original y todos los ``Location`` intermedios,
+      absolutos o relativos).
+    - ``follow_redirects=False``: httpx nunca sigue saltos por su cuenta.
+    - 301/302/303 degradan a GET y sueltan el cuerpo; 307/308 conservan
+      método y cuerpo.
+    - ``client_factory`` existe para tests (transporte simulado).
+    """
+    current_url = url
+    current_method = method.upper()
+    current_content = content
+    current_json = json_body
+    hops = 0
+
+    while True:
+        # Validación por hop: original y cada redirección (anti-SSRF).
+        assert_public_host(current_url, block_private)
+        with client_factory(follow_redirects=False, timeout=timeout) as client:
+            response = client.request(
+                current_method,
+                current_url,
+                headers=dict(headers or {}),
+                content=current_content,
+                json=current_json,
+            )
+
+        if response.status_code not in _REDIRECT_STATUSES:
+            return response
+        if hops >= max_redirects:
+            raise ToolExecutionError(
+                f"Demasiadas redirecciones (>{max_redirects}) solicitando {url!r}"
+            )
+
+        location = response.headers.get("location")
+        if not location:
+            return response  # 3xx sin Location: se devuelve tal cual
+        current_url = urljoin(current_url, location)  # resuelve relativas
+        current_method = _downgraded_method(current_method, response.status_code)
+        if current_method == "GET":
+            current_content, current_json = None, None
+        hops += 1
+
+
 # ----------------------------------------------------------------------
 # Registro de tools
 # ----------------------------------------------------------------------
@@ -82,7 +152,8 @@ class AutomationModule(BaseModule):
             name="http_request",
             description=(
                 "Perform an HTTP request (GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS). "
-                "Private/internal hosts are blocked by default (anti-SSRF). Body is truncated."
+                "Private/internal hosts are blocked by default (anti-SSRF), including "
+                "redirect targets: every hop is re-validated. Body is truncated."
             ),
         )
         def http_request(
@@ -95,20 +166,23 @@ class AutomationModule(BaseModule):
         ) -> str:
             try:
                 settings = self.settings
-                assert_public_host(url, settings.http_block_private if settings else True)
                 method_upper = method.upper()
                 if method_upper not in _ALLOWED_METHODS:
                     raise ToolExecutionError(f"Método no soportado: {method_upper}")
+                block_private = settings.http_block_private if settings else True
                 default_timeout = settings.http_timeout if settings else 15.0
-                resolved_timeout = clamp(timeout if timeout is not None else default_timeout, 0.1, 60.0)
-                with httpx.Client(follow_redirects=True, timeout=resolved_timeout) as client:
-                    response = client.request(
-                        method_upper,
-                        url,
-                        headers=dict(headers or {}),
-                        content=body if json_body is None else None,
-                        json=json_body,
-                    )
+                resolved_timeout = clamp(
+                    timeout if timeout is not None else default_timeout, 0.1, 60.0
+                )
+                response = request_with_redirect_guard(
+                    url,
+                    method=method.upper(),
+                    headers=dict(headers or {}),
+                    content=body if json_body is None else None,
+                    json_body=json_body,
+                    block_private=block_private,
+                    timeout=resolved_timeout,
+                )
                 max_chars = settings.max_output_chars if settings else 20_000
                 response_text = response.text
                 return to_json(
@@ -129,18 +203,23 @@ class AutomationModule(BaseModule):
 
         @ctx.tool(
             name="send_webhook",
-            description="POST a JSON payload to a webhook URL (adds X-Webhook-Secret header if provided).",
+            description=(
+                "POST a JSON payload to a webhook URL (adds X-Webhook-Secret header if "
+                "provided). Redirect targets are re-validated (anti-SSRF)."
+            ),
         )
         def send_webhook(url: str, payload: dict[str, Any], secret: str | None = None) -> str:
             try:
                 settings = self.settings
-                assert_public_host(url, settings.http_block_private if settings else True)
                 webhook_headers = {"X-Webhook-Secret": secret} if secret else {}
-                with httpx.Client(
-                    follow_redirects=True,
+                response = request_with_redirect_guard(
+                    url,
+                    method="POST",
+                    headers=webhook_headers,
+                    json_body=payload,
+                    block_private=settings.http_block_private if settings else True,
                     timeout=settings.http_timeout if settings else 15.0,
-                ) as client:
-                    response = client.post(url, json=payload, headers=webhook_headers)
+                )
                 return to_json(
                     {
                         "url": str(response.url),

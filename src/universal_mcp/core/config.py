@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     disabled_modules: Annotated[list[str], NoDecode] = Field(default_factory=list)
     plugin_dirs: Annotated[list[Path], NoDecode] = Field(default_factory=list)
 
+    # --- Permisos por herramienta (globs sobre el nombre final) -------------
+    # allowed_tools vacío = todas permitidas. blocked_tools SIEMPRE gana sobre
+    # allowed_tools (deny-by-default para los patrones bloqueados).
+    allowed_tools: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    blocked_tools: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     # --- Sandbox y seguridad ------------------------------------------------
     workspace_dir: Path = Path("./workspace")
     enable_shell: bool = False
@@ -63,7 +69,9 @@ class Settings(BaseSettings):
     http_timeout: float = 15.0
     max_output_chars: int = 20_000
 
-    @field_validator("disabled_modules", "plugin_dirs", mode="before")
+    @field_validator(
+        "disabled_modules", "plugin_dirs", "allowed_tools", "blocked_tools", mode="before"
+    )
     @classmethod
     def _coerce_lists(cls, value: Any) -> list[Any]:
         return _parse_list(value)
